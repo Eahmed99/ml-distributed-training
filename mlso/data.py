@@ -1,5 +1,6 @@
 from pathlib import Path
 from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
 
 def load_cifar10(data_dir="data"):
     # download dataset in memeory
@@ -22,15 +23,50 @@ def load_cifar10(data_dir="data"):
 
     return train_dataset, test_dataset
 
+def create_train_loader(train_dataset, batch_size = 128):
+    # create a dataloader for training
+
+    train_loader = DataLoader(
+        dataset = train_dataset,
+        batch_size = batch_size,
+        shuffle =True,
+        num_workers = 0,
+        drop_last = False,
+
+    )
+
+    return train_loader
+
+
+def create_test_loader(test_dataset, batch_size=128):
+    #Create a DataLoader for model evaluation
+
+    test_loader = DataLoader(
+        dataset=test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        drop_last=False,
+    )
+
+    return test_loader
+
+
+
 if __name__ == "__main__":
     train_dataset, test_dataset = load_cifar10()
 
-    image, label = train_dataset[0]
+    train_loader = create_train_loader(train_dataset, batch_size=128)
+    test_loader = create_test_loader(test_dataset, batch_size=128)
 
     print("Training images:", len(train_dataset))
     print("Test images:", len(test_dataset))
-    print("Image shape:", image.shape)
-    print("Image dtype:", image.dtype)
-    print("Image pixel range:", image.min().item(), image.max().item())
-    print("Label:", label)
-    print("Class:", train_dataset.classes[label])
+
+    print("Training batches:", len(train_loader))
+    print("Test batches:", len(test_loader))
+
+    images, labels = next(iter(test_loader))
+
+    print("Test batch shape:", images.shape)
+    print("Test labels shape:", labels.shape)
+
