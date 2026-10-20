@@ -19,6 +19,9 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, max_batch
     total_loss = 0.0
     total_images = 0
 
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
     start_time = time.perf_counter()
 
     for batch_number, (images, labels) in enumerate(train_loader):
@@ -45,6 +48,9 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, max_batch
         if max_batches is not None and batch_number + 1 >= max_batches:
 
             break
+
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
     epoch_time = time.perf_counter() - start_time
 
@@ -102,12 +108,7 @@ def main ():
             device,
         )
 
-        from torch.utils.data import Subset
-
-        small_test_dataset = Subset(test_dataset, range(128))
-        small_test_loader = create_test_loader(small_test_dataset, batch_size=128)
-
-        accuracy = evaluate_model(model, small_test_loader, device)
+        accuracy = evaluate_model(model, test_loader, device)
         print("Epoch:", epoch + 1)
         print("Average loss:", average_loss)
         print("Test accuracy:", accuracy, "%")
