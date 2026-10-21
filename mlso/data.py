@@ -1,6 +1,7 @@
 from pathlib import Path
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
+import torch
 
 def load_cifar10(data_dir="data"):
     # download dataset in memeory
@@ -23,15 +24,21 @@ def load_cifar10(data_dir="data"):
 
     return train_dataset, test_dataset
 
-def create_train_loader(train_dataset, batch_size = 128):
+def create_train_loader(train_dataset, batch_size = 128, seed=42, sampler = None):
     # create a dataloader for training
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
 
     train_loader = DataLoader(
         dataset = train_dataset,
         batch_size = batch_size,
-        shuffle =True,
+        shuffle =(sampler is None),
         num_workers = 0,
         drop_last = False,
+        generator=generator,
+        sampler= sampler
+
 
     )
 
