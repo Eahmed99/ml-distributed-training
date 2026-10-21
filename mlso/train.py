@@ -62,6 +62,10 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, max_batch
 
 
 def main ():
+
+    torch.set_num_threads(4)
+    print("PyTorch CPU threads:", torch.get_num_threads())
+
     # Load The data
 
     train_dataset, test_dataset = load_cifar10()
