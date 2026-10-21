@@ -221,3 +221,6 @@ __marimo__/
 
 # data path
 data/
+
+# Checkpoint path
+checkpoints/

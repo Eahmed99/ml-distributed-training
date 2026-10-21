@@ -9,6 +9,8 @@ import torch
 import time
 from mlso.evaluate import evaluate_model
 from mlso.model import create_model
+from pathlib import Path
+import csv
 
 
 def train_one_epoch(model, train_loader, criterion, optimizer, device, max_batches =None):
@@ -96,7 +98,34 @@ def main ():
         lr =0.01,
     )
 
-    num_epoch = 5
+    num_epoch = 1
+
+    checkpoint_dir = Path("checkpoints")
+
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # writing metrics in a CSV for later comaprriosn
+
+    metrics_dir = Path("benchmarks")
+
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+
+    metrics_file = metrics_dir / "training_metrics.csv"
+
+    with open(metrics_file, "w", newline="") as file:
+
+        writer = csv.DictWriter(
+
+            file,
+            fieldnames=[
+                "epoch",
+                "train_loss",
+                "test_accuracy",
+                "epoch_time_seconds",
+            ],
+        )
+
+        writer.writeheader()
 
     for epoch in range(num_epoch):
 
@@ -106,13 +135,52 @@ def main ():
             criterion,
             optimizer,
             device,
+            max_batches=1,
+
         )
 
         accuracy = evaluate_model(model, test_loader, device)
+
+        # writing training info in a csv
+
+
+        with open(metrics_file, "a", newline="") as file:
+
+            writer = csv.DictWriter(
+                file,
+                fieldnames=[
+                    "epoch",
+                    "train_loss",
+                    "test_accuracy",
+                    "epoch_time_seconds",
+                ],
+            )
+
+            writer.writerow({
+                "epoch": epoch + 1,
+                "train_loss": average_loss,
+                "test_accuracy": accuracy,
+                "epoch_time_seconds": epoch_time,
+            })
+
+
         print("Epoch:", epoch + 1)
         print("Average loss:", average_loss)
         print("Test accuracy:", accuracy, "%")
         print("Training time:", epoch_time, "seconds")
+
+        
+        # Creating a dictionary checkpoint
+        checkpoint = {
+
+            "epoch": epoch+1,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        }
+
+        checkpoint_path = checkpoint_dir / "latest_checkpoint.pt"
+        torch.save(checkpoint, checkpoint_path)
+        print("Check Point saved:", checkpoint_path)
 
 if __name__ == "__main__":
     main()
