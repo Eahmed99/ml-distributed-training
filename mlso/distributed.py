@@ -129,6 +129,8 @@ def setup_distributed():
 
     torch.cuda.set_device(local_rank)
 
+    return rank, world_size, local_rank
+
 def cleanup_distributed():
 
     if dist.is_initialized():
