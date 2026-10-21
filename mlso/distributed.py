@@ -6,8 +6,7 @@ from torch.utils.data import DistributedSampler
 from mlso.data import load_cifar10, create_train_loader
 from mlso.model import create_model
 import torch.nn as nn
-from mlso.train import train_one_epoch
-
+from mlso.train import train_one_epoch, parse_args
 
 def create_distributed_model(local_rank):
 
@@ -28,6 +27,7 @@ def create_distributed_model(local_rank):
 def distributed_worker():
 
     try:
+        args = parse_args()
         # Initilaize
 
         rank, world_size, local_rank = setup_distributed()
@@ -73,7 +73,7 @@ def distributed_worker():
             lr =0.01
         )
 
-        num_epoch = 1
+        num_epoch = args.epochs
 
         for epoch in range(num_epoch):
 
@@ -86,7 +86,7 @@ def distributed_worker():
                 criterion,
                 optimizer,
                 device,
-                max_batches=3,
+                max_batches=args.max_batches,
             )
 
             print(

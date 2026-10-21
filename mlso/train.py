@@ -11,6 +11,28 @@ from mlso.evaluate import evaluate_model
 from mlso.model import create_model
 from pathlib import Path
 import csv
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="ResNet-18 CPU training"
+    )
+
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=1,
+        help="Number of training epochs"
+    )
+
+    parser.add_argument(
+        "--max-batches",
+        type=int,
+        default=None,
+        help="Maximum batches per epoch; omit for full training"
+    )
+
+    return parser.parse_args()
 
 
 def train_one_epoch(model, train_loader, criterion, optimizer, device, max_batches =None):
@@ -62,7 +84,7 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device, max_batch
 
 
 def main ():
-
+    args = parse_args()
     torch.set_num_threads(4)
     print("PyTorch CPU threads:", torch.get_num_threads())
 
@@ -102,7 +124,7 @@ def main ():
         lr =0.01,
     )
 
-    num_epoch = 1
+    num_epoch = args.epochs
 
     checkpoint_dir = Path("checkpoints")
 
@@ -139,7 +161,7 @@ def main ():
             criterion,
             optimizer,
             device,
-            max_batches=1,
+            max_batches=args.max_batches,
 
         )
 
