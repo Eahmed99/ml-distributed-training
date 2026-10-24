@@ -1,140 +1,121 @@
+import time
+from pathlib import Path
+
 import torch
 import torch.distributed as dist
-import os
+import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DistributedSampler
-from mlso.data import load_cifar10, create_train_loader
+
+from mlso.data import load_cifar10, create_train_loader, create_test_loader
+from mlso.evaluate import evaluate_model
 from mlso.model import create_model
-import torch.nn as nn
-from mlso.train import train_one_epoch, parse_args
+from mlso.train import parse_args, seed_everything, train_one_epoch, write_metrics
+
+
+def setup_distributed():
+    dist.init_process_group(backend="nccl", init_method="env://")
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    local_rank = int(__import__("os").environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    return rank, world_size, local_rank
+
+
+def cleanup_distributed():
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
 
 def create_distributed_model(local_rank):
-
     device = torch.device("cuda", local_rank)
-    model = create_model()
-    model = model.to(device)
-
-    model = DDP(
-
-        model,
-        device_ids= [local_rank],
-        output_device= local_rank,
-    )
-
-    return model
+    model = create_model().to(device)
+    return DDP(model, device_ids=[local_rank], output_device=local_rank)
 
 
 def distributed_worker():
-
+    args = parse_args()
+    rank, world_size, local_rank = setup_distributed()
     try:
-        args = parse_args()
-        # Initilaize
-
-        rank, world_size, local_rank = setup_distributed()
-
-        # Idenitfy worker gpu
-
+        if args.batch_size % world_size:
+            raise ValueError("Global batch size must be divisible by number of workers")
         device = torch.device("cuda", local_rank)
-
-        # create ddp wrapper
-
+        seed_everything(args.seed)
         model = create_distributed_model(local_rank)
-
-        # Loading and dividing the data between gpu
-
         train_dataset, test_dataset = load_cifar10()
-
-        train_sampler = DistributedSampler(
-
-            train_dataset,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True,
-            seed=42,
-            drop_last= False,
-        )
-
-        local_batch_size = 128 // world_size # maontiang gloabl batch size of 128
-
-
-        # Create the worker
-
-        train_loader = create_train_loader(
-            train_dataset,
-            batch_size= local_batch_size,
-            sampler= train_sampler,
-        )
-
-        # Trining loop inside each worker
-
+        sampler = DistributedSampler(train_dataset, num_replicas=world_size,
+                                     rank=rank, shuffle=True, seed=args.seed, drop_last=False)
+        train_loader = create_train_loader(train_dataset,
+                                           batch_size=args.batch_size // world_size,
+                                           sampler=sampler, seed=args.seed)
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.SGD(
-            model.parameters(),
-            lr =0.01
-        )
-
-        num_epoch = args.epochs
-
-        for epoch in range(num_epoch):
-
-            train_sampler.set_epoch(epoch)
-
-            average_loss, epoch_time = train_one_epoch(
-
-                model,
-                train_loader,
-                criterion,
-                optimizer,
-                device,
-                max_batches=args.max_batches,
-            )
-
-            print(
-                f"Rank {rank} | Epoch {epoch + 1} "
-                f"| Local loss: {average_loss:.4f} "
-                f"| Time: {epoch_time:.2f}s",
-                flush=True,
-            )
-
-        print(
-            f"Rank {rank}: "
-            f"Dataset partition = {len(train_sampler)} images, "
-            f"Local batch size = {local_batch_size}, "
-            f"Batches = {len(train_loader)}",
-            flush=True,
-        )
-        
-
-        print(
-            f"Worker {rank}/{world_size} "
-            f"Using GPU {local_rank}"
-        )
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate)
+        # Only rank zero evaluates the unwrapped model. Other ranks wait below.
+        test_loader = create_test_loader(test_dataset, batch_size=args.batch_size) if rank == 0 else None
+        output = Path(args.output_dir)
+        if rank == 0:
+            output.mkdir(parents=True, exist_ok=True)
+        dist.barrier()
+        rows = []
+        cumulative_training = 0.0
+        cumulative_response = 0.0
+        for epoch in range(args.epochs):
+            sampler.set_epoch(epoch)
+            dist.barrier()
+            epoch_start = time.perf_counter()
+            profiler = None
+            if args.profile and epoch == 0:
+                from torch.profiler import profile, ProfilerActivity
+                profiler = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
+                profiler.__enter__()
+            try:
+                loss_sum, num_images, batches, local_seconds = train_one_epoch(
+                    model, train_loader, criterion, optimizer, device,
+                    max_batches=args.max_batches, return_stats=True)
+            finally:
+                if profiler:
+                    profiler.__exit__(None, None, None)
+                    profiler.export_chrome_trace(str(output / f"gpu_{world_size}_rank{rank}_trace.json"))
+            # Measure the longest worker time as synchronous job training time.
+            measured = torch.tensor([loss_sum, float(num_images), float(local_seconds)],
+                                    dtype=torch.float64, device=device)
+            dist.all_reduce(measured[:2], op=dist.ReduceOp.SUM)
+            dist.all_reduce(measured[2:], op=dist.ReduceOp.MAX)
+            global_loss = (measured[0] / measured[1]).item()
+            global_images = int(measured[1].item())
+            train_seconds = measured[2].item()
+            dist.barrier()
+            if rank == 0:
+                accuracy = evaluate_model(model.module, test_loader, device)
+                torch.cuda.synchronize(device)
+            else:
+                accuracy = None
+            dist.barrier()
+            # Rank 0 measures epoch wall time; this includes test evaluation and barriers.
+            response_seconds = time.perf_counter() - epoch_start
+            if rank == 0:
+                cumulative_training += train_seconds
+                cumulative_response += response_seconds
+                rows.append(dict(epoch=epoch+1, workers=world_size, device=f"gpu_{world_size}",
+                                 batches=batches, images=global_images, train_loss=global_loss,
+                                 test_accuracy=accuracy, training_seconds=train_seconds,
+                                 response_seconds=response_seconds,
+                                 total_training_seconds=cumulative_training,
+                                 total_response_seconds=cumulative_response,
+                                 images_per_second=global_images/train_seconds,
+                                 global_batch_size=args.batch_size, seed=args.seed,
+                                 cpu_threads=""))
+                write_metrics(output / f"gpu_{world_size}_metrics.csv", rows)
+                torch.save(dict(epoch=epoch+1, model_state_dict=model.module.state_dict(),
+                                optimizer_state_dict=optimizer.state_dict(),
+                                config=vars(args)), output / f"gpu_{world_size}_latest.pt")
+                print(f"gpu_{world_size}: epoch {epoch+1}, {batches} steps, "
+                      f"{global_images} images, global loss {global_loss:.4f}, "
+                      f"test accuracy {accuracy:.2f}%, train {train_seconds:.2f}s, "
+                      f"epoch response {response_seconds:.2f}s", flush=True)
+            dist.barrier()
     finally:
         cleanup_distributed()
-
-def setup_distributed():
-
-    dist.init_process_group(
-
-        backend= "nccl",
-        init_method= "env://",
-
-    )
-
-    rank = dist.get_rank()
-
-    world_size = dist.get_world_size()
-
-    local_rank = int(os.environ["LOCAL_RANK"])
-
-    torch.cuda.set_device(local_rank)
-
-    return rank, world_size, local_rank
-
-def cleanup_distributed():
-
-    if dist.is_initialized():
-        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
