@@ -224,3 +224,6 @@ data/
 
 # Checkpoint path
 checkpoints/
+# Generated benchmark checkpoints and large profiler traces
+benchmarks/*.pt
+benchmarks/*_trace.json
